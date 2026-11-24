@@ -16,6 +16,9 @@ type model struct {
 	quotes   map[string]quoteData
 	selected int
 	loading  bool
+	adding   bool
+	input    string
+	notice   string
 }
 
 var (
@@ -24,6 +27,7 @@ var (
 	dimStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("242"))
 	upStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
 	downStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+	accentStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("81"))
 	boxStyle      = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("238")).Padding(0, 1)
 )
 
@@ -65,29 +69,114 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			idx := msg.Y - 1
 			if idx >= 0 && idx < len(m.tickers) {
 				m.selected = idx
+				m.notice = ""
 				m.loading = true
 				return m, fetchQuote(m.tickers[m.selected])
 			}
 		}
 
 	case tea.KeyMsg:
+		if m.adding {
+			return m.handleAddKey(msg)
+		}
+
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		case "j", "down":
 			if m.selected < len(m.tickers)-1 {
 				m.selected++
+				m.notice = ""
 			}
 		case "k", "up":
 			if m.selected > 0 {
 				m.selected--
+				m.notice = ""
 			}
 		case "r":
 			m.loading = true
+			m.notice = ""
 			return m, fetchAll(m.tickers)
+		case "+", "a":
+			m.adding = true
+			m.input = ""
+			m.notice = ""
+		case "-":
+			return m, m.removeSelected()
 		}
 	}
 	return m, nil
+}
+
+func (m model) handleAddKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc:
+		m.adding = false
+		m.input = ""
+		return m, nil
+
+	case tea.KeyEnter:
+		sym := strings.ToUpper(strings.TrimSpace(m.input))
+		m.adding = false
+		m.input = ""
+		if sym == "" {
+			return m, nil
+		}
+		for i, existing := range m.tickers {
+			if existing == sym {
+				m.selected = i
+				m.notice = sym + " is already added"
+				return m, nil
+			}
+		}
+
+		m.tickers = append(m.tickers, sym)
+		m.quotes[sym] = quoteData{Symbol: sym}
+		m.selected = len(m.tickers) - 1
+		m.loading = true
+
+		if err := saveTickers(m.tickers); err != nil {
+			m.notice = "write error: " + err.Error()
+		} else {
+			m.notice = "added " + sym
+		}
+		return m, fetchQuote(sym)
+	case tea.KeyBackspace, tea.KeyDelete:
+		if len(m.input) > 0 {
+			m.input = m.input[:len(m.input)-1]
+		}
+		return m, nil
+
+	case tea.KeyRunes:
+		if msg.String() == " " {
+			return m, nil
+		}
+		m.input += strings.ToUpper(msg.String())
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m *model) removeSelected() tea.Cmd {
+	if len(m.tickers) <= 1 {
+		m.notice = "you need to have at least one ticker"
+		return nil
+	}
+
+	removed := m.tickers[m.selected]
+	m.tickers = append(m.tickers[:m.selected], m.tickers[m.selected+1:]...)
+	delete(m.quotes, removed)
+
+	if m.selected >= len(m.tickers) {
+		m.selected = len(m.tickers) - 1
+	}
+
+	if err := saveTickers(m.tickers); err != nil {
+		m.notice = "write error: " + err.Error()
+	} else {
+		m.notice = "removed " + removed
+	}
+	return nil
 }
 
 func (m model) View() string {
@@ -124,20 +213,30 @@ func (m model) View() string {
 	activeSym := m.tickers[m.selected]
 	active := m.quotes[activeSym]
 	detail := fmt.Sprintf(
-		"Selected: %s |  Prev. close: %.2f | Punktów 1D: %d",
+		"Selected: %s |  Prev. close: %.2f |1D Points: %d",
 		selectedStyle.Render(activeSym),
 		active.PrevClose,
 		len(active.Series),
 	)
 
-	status := "click row or use ↑/↓ · r: refresh · q: quit"
+	var extraLine string
+	if m.adding {
+		extraLine = accentStyle.Render(fmt.Sprintf("Nowy ticker: %s█", m.input)) + dimStyle.Render("  (Enter: dodaj, Esc: anuluj)")
+	} else if m.notice != "" {
+		extraLine = accentStyle.Render(m.notice)
+	}
+
+	status := "+: add · -: remove · r: refresh · click/↑↓ · q: quit"
 	if m.loading {
 		status = "downloading data..."
 	}
 
-	return boxStyle.Render(rows.String()) + "\n" +
-		dimStyle.Render(detail) + "\n" +
-		dimStyle.Render(status) + "\n"
+	out := boxStyle.Render(rows.String()) + "\n" + dimStyle.Render(detail) + "\n"
+	if extraLine != "" {
+		out += extraLine + "\n"
+	}
+	out += dimStyle.Render(status) + "\n"
+	return out
 }
 
 func main() {
