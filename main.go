@@ -9,16 +9,20 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+const refreshInterval = 30 * time.Second
+
 type tickMsg time.Time
 
 type model struct {
-	tickers  []string
-	quotes   map[string]quoteData
-	selected int
-	loading  bool
-	adding   bool
-	input    string
-	notice   string
+	tickers     []string
+	quotes      map[string]quoteData
+	selected    int
+	loading     bool
+	now         time.Time
+	nextRefresh time.Time
+	adding      bool
+	input       string
+	notice      string
 }
 
 var (
@@ -32,7 +36,7 @@ var (
 )
 
 func scheduleTick() tea.Cmd {
-	return tea.Tick(30*time.Second, func(t time.Time) tea.Msg {
+	return tea.Tick(time.Second, func(t time.Time) tea.Msg {
 		return tickMsg(t)
 	})
 }
@@ -51,14 +55,25 @@ func initialModel(tickers []string) model {
 }
 
 func (m model) Init() tea.Cmd {
+	now := time.Now()
+	m.now = now
+	m.nextRefresh = now.Add(refreshInterval)
 	return tea.Batch(fetchAll(m.tickers), scheduleTick())
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tickMsg:
-		m.loading = true
-		return m, tea.Batch(fetchAll(m.tickers), scheduleTick())
+		m.now = time.Time(msg)
+		if m.adding {
+			return m, scheduleTick()
+		}
+		if !m.now.Before(m.nextRefresh) {
+			m.nextRefresh = m.now.Add(refreshInterval)
+			m.loading = true
+			return m, tea.Batch(fetchAll(m.tickers), scheduleTick())
+		}
+		return m, scheduleTick()
 
 	case quoteMsg:
 		m.quotes[msg.Symbol] = quoteData(msg)
@@ -94,6 +109,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.notice = ""
 			}
 		case "r":
+			now := time.Now()
+			m.now = now
+			m.nextRefresh = now.Add(refreshInterval)
 			m.loading = true
 			m.notice = ""
 			return m, fetchAll(m.tickers)
@@ -213,7 +231,7 @@ func (m model) View() string {
 	activeSym := m.tickers[m.selected]
 	active := m.quotes[activeSym]
 	detail := fmt.Sprintf(
-		"Selected: %s |  Prev. close: %.2f |1D Points: %d",
+		"Selected: %s | Prev. close: %.2f | 1D Points: %d",
 		selectedStyle.Render(activeSym),
 		active.PrevClose,
 		len(active.Series),
@@ -221,21 +239,47 @@ func (m model) View() string {
 
 	var extraLine string
 	if m.adding {
-		extraLine = accentStyle.Render(fmt.Sprintf("Nowy ticker: %s█", m.input)) + dimStyle.Render("  (Enter: dodaj, Esc: anuluj)")
+		extraLine = accentStyle.Render(fmt.Sprintf("New ticker: %s█", m.input)) + dimStyle.Render("  (Enter: add, Esc: cancel)")
 	} else if m.notice != "" {
 		extraLine = accentStyle.Render(m.notice)
 	}
 
 	status := "+: add · -: remove · r: refresh · click/↑↓ · q: quit"
 	if m.loading {
-		status = "downloading data..."
+		status = fmt.Sprintf("downloading data...")
 	}
+
+	now := m.now
+	if now.IsZero() {
+		now = time.Now()
+	}
+
+	plLoc, errPL := time.LoadLocation("Europe/Warsaw")
+	usLoc, errUS := time.LoadLocation("America/New_York")
+
+	plTime := now.Format("15:04:05")
+	if errPL == nil {
+		plTime = now.In(plLoc).Format("15:04:05")
+	}
+
+	usTime := now.Format("15:04:05")
+	if errUS == nil {
+		usTime = now.In(usLoc).Format("15:04:05")
+	}
+
+	secsLeft := int(time.Until(m.nextRefresh).Seconds())
+	if secsLeft < 0 {
+		secsLeft = 0
+	}
+
+	timeLine := fmt.Sprintf("PL: %s  |  US (ET): %s  |  next refresh in: %ds", plTime, usTime, secsLeft)
 
 	out := boxStyle.Render(rows.String()) + "\n" + dimStyle.Render(detail) + "\n"
 	if extraLine != "" {
 		out += extraLine + "\n"
 	}
 	out += dimStyle.Render(status) + "\n"
+	out += dimStyle.Render(timeLine) + "\n"
 	return out
 }
 
