@@ -80,6 +80,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = false
 
 	case tea.MouseMsg:
+		if m.adding {
+			return m, nil
+		}
 		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
 			idx := msg.Y - 1
 			if idx >= 0 && idx < len(m.tickers) {
@@ -159,6 +162,7 @@ func (m model) handleAddKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.notice = "added " + sym
 		}
 		return m, fetchQuote(sym)
+
 	case tea.KeyBackspace, tea.KeyDelete:
 		if len(m.input) > 0 {
 			m.input = m.input[:len(m.input)-1]
@@ -208,11 +212,13 @@ func (m model) View() string {
 			rowStyle = selectedStyle
 		}
 
+		symCell := rowStyle.Width(16).Render(sym)
+
 		var line string
 		if q.Err != nil {
-			line = fmt.Sprintf("%s%-10s %s", cursor, sym, downStyle.Render("error: "+q.Err.Error()))
+			line = fmt.Sprintf("%s%s  %s", cursor, symCell, downStyle.Render("error: "+q.Err.Error()))
 		} else if q.Price == 0 && len(q.Series) == 0 {
-			line = fmt.Sprintf("%s%-10s %s", cursor, sym, dimStyle.Render("loading..."))
+			line = fmt.Sprintf("%s%s  %s", cursor, symCell, dimStyle.Render("loading..."))
 		} else {
 			sign := "+"
 			pctStyle := upStyle
@@ -220,12 +226,13 @@ func (m model) View() string {
 				sign = ""
 				pctStyle = downStyle
 			}
-			pctStr := pctStyle.Render(fmt.Sprintf("%s%.2f%%", sign, q.ChangePct))
-			spark := dimStyle.Render(sparkline(q.Series, 16))
-			line = fmt.Sprintf("%s%-10s %9.2f   %8s   %s", cursor, sym, q.Price, pctStr, spark)
+			priceCell := rowStyle.Width(10).Align(lipgloss.Right).Render(fmt.Sprintf("%.2f", q.Price))
+			pctCell := pctStyle.Width(9).Align(lipgloss.Right).Render(fmt.Sprintf("%s%.2f%%", sign, q.ChangePct))
+			sparkCell := dimStyle.Width(16).Render(sparkline(q.Series, 16))
+			line = fmt.Sprintf("%s%s  %s  %s  %s", cursor, symCell, priceCell, pctCell, sparkCell)
 		}
 
-		rows.WriteString(rowStyle.Render(line) + "\n")
+		rows.WriteString(line + "\n")
 	}
 
 	activeSym := m.tickers[m.selected]
@@ -246,7 +253,7 @@ func (m model) View() string {
 
 	status := "+: add · -: remove · r: refresh · click/↑↓ · q: quit"
 	if m.loading {
-		status = fmt.Sprintf("downloading data...")
+		status = "downloading data..."
 	}
 
 	now := m.now
@@ -254,16 +261,13 @@ func (m model) View() string {
 		now = time.Now()
 	}
 
-	plLoc, errPL := time.LoadLocation("Europe/Warsaw")
-	usLoc, errUS := time.LoadLocation("America/New_York")
-
 	plTime := now.Format("15:04:05")
-	if errPL == nil {
+	if plLoc, err := time.LoadLocation("Europe/Warsaw"); err == nil {
 		plTime = now.In(plLoc).Format("15:04:05")
 	}
 
 	usTime := now.Format("15:04:05")
-	if errUS == nil {
+	if usLoc, err := time.LoadLocation("America/New_York"); err == nil {
 		usTime = now.In(usLoc).Format("15:04:05")
 	}
 
